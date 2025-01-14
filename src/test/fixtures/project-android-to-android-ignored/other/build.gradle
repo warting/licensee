@@ -1,9 +1,12 @@
-apply plugin: 'com.android.library'
+plugins {
+  alias(libs.plugins.android.library)
+}
 
 android {
-  compileSdkVersion versions.compileSdk
+  compileSdk 33
+  namespace 'com.other'
 
   defaultConfig {
-    minSdkVersion versions.minSdk
+    minSdk 21
   }
 }

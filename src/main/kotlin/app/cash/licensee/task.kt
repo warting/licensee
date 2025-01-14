@@ -15,20 +15,30 @@
  */
 package app.cash.licensee
 
-import app.cash.licensee.ViolationAction.FAIL
-import app.cash.licensee.ViolationAction.IGNORE
 import java.io.File
 import java.io.Serializable
-import javax.xml.parsers.DocumentBuilderFactory
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import org.apache.maven.model.Dependency
+import org.apache.maven.model.Parent
+import org.apache.maven.model.Repository
+import org.apache.maven.model.building.DefaultModelBuilderFactory
+import org.apache.maven.model.building.DefaultModelBuildingRequest
+import org.apache.maven.model.building.FileModelSource
+import org.apache.maven.model.building.ModelBuildingRequest
+import org.apache.maven.model.building.ModelSource2
+import org.apache.maven.model.resolution.ModelResolver
 import org.gradle.api.DefaultTask
 import org.gradle.api.artifacts.Configuration
-import org.gradle.api.artifacts.ResolvedArtifact
+import org.gradle.api.artifacts.ConfigurationContainer
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.dsl.DependencyHandler
+import org.gradle.api.artifacts.result.ResolvedComponentResult
 import org.gradle.api.artifacts.result.ResolvedVariantResult
 import org.gradle.api.attributes.Attribute
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFile
+import org.gradle.api.logging.LogLevel
 import org.gradle.api.logging.LogLevel.ERROR
 import org.gradle.api.logging.LogLevel.INFO
 import org.gradle.api.logging.LogLevel.LIFECYCLE
@@ -45,56 +55,110 @@ import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 
 @CacheableTask
-internal abstract class LicenseeTask : DefaultTask() {
+abstract class LicenseeTask : DefaultTask() {
   @get:Input
-  abstract val dependencyConfig: Property<DependencyConfig>
-
-  @get:Input
-  abstract val validationConfig: Property<ValidationConfig>
+  internal abstract val dependencyConfig: Property<DependencyConfig>
 
   @get:Input
-  abstract val violationAction: Property<ViolationAction>
+  internal abstract val validationConfig: Property<ValidationConfig>
 
   @get:Input
-  abstract val coordinatesToPomInfo: MapProperty<DependencyCoordinates, PomInfo>
+  internal abstract val violationAction: Property<ViolationAction>
 
-  fun addPomFileDependencies(configuration: Configuration) {
-    val root = configuration.incoming.resolutionResult.rootComponent
+  @get:Input
+  internal abstract val unusedAction: Property<UnusedAction>
 
+  @get:Input
+  internal abstract val coordinatesToPomInfo: MapProperty<DependencyCoordinates, PomInfo>
+
+  fun configurationToCheck(configuration: Configuration) {
+    loadDependenciesFromConfiguration(configuration.incoming.resolutionResult.rootComponent)
+  }
+
+  fun configurationToCheck(configuration: Provider<Configuration>) {
+    loadDependenciesFromConfiguration(configuration.flatMap { it.incoming.resolutionResult.rootComponent })
+  }
+
+  private fun loadDependenciesFromConfiguration(root: Provider<ResolvedComponentResult>) {
+    val dependencies = project.dependencies
+    val configurations = project.configurations
     val pomInfos: Provider<Map<DependencyCoordinates, PomInfo>> = root.zip(dependencyConfig) { root, depConfig ->
       val directDependencies = loadDependencyCoordinates(
         logger,
         root,
         depConfig,
       )
-      val directPomFiles = directDependencies.coordinates.fetchPomFiles(root.variants)
-      directPomFiles.getPomInfo(root.variants)
+      val directPomFiles = directDependencies.coordinates.fetchPomFiles(
+        root.variants,
+        dependencies,
+        configurations,
+      )
+      directPomFiles.getPomInfo(
+        root.variants,
+        dependencies,
+        configurations,
+      )
     }
 
     this.coordinatesToPomInfo.set(pomInfos)
   }
 
-  private fun Iterable<ResolvedArtifact>.getPomInfo(variants: List<ResolvedVariantResult>): Map<DependencyCoordinates, PomInfo> {
-    val factory = DocumentBuilderFactory.newInstance()
-    val documentBuilder = factory.newDocumentBuilder()
+  private fun Iterable<DependencyCoordinatesWithPomFile>.getPomInfo(
+    variants: List<ResolvedVariantResult>,
+    dependencies: DependencyHandler,
+    configurations: ConfigurationContainer,
+  ): Map<DependencyCoordinates, PomInfo> {
+    val builder = DefaultModelBuilderFactory().newInstance()
+    val resolver = object : ModelResolver {
+      fun resolve(dependencyCoordinates: DependencyCoordinates): FileModelSource {
+        val pomFile =
+          setOf(dependencyCoordinates).fetchPomFiles(
+            variants,
+            dependencies,
+            configurations,
+          ).single().pomFile
+        return FileModelSource(pomFile)
+      }
 
-    return associate { pom ->
-      // Cast is safe because all resolved artifacts are pom files.
-      val coordinates = (pom.id.componentIdentifier as ModuleComponentIdentifier).toDependencyCoordinates()
-      val pomDocument = documentBuilder.parse(pom.file)
+      override fun resolveModel(groupId: String, artifactId: String, version: String): ModelSource2 =
+        resolve(DependencyCoordinates(groupId, artifactId, version))
 
-      coordinates to loadPomInfo(pomDocument) { parentPom ->
-        documentBuilder.parse(setOf(parentPom).fetchPomFiles(variants).single().file)
+      override fun resolveModel(parent: Parent): ModelSource2 =
+        resolve(DependencyCoordinates(parent.groupId, parent.artifactId, parent.version))
+
+      override fun resolveModel(dependency: Dependency): ModelSource2 =
+        resolve(DependencyCoordinates(dependency.groupId, dependency.artifactId, dependency.version))
+
+      override fun addRepository(repository: Repository) { }
+      override fun addRepository(repository: Repository, replace: Boolean) { }
+      override fun newCopy(): ModelResolver = this
+    }
+
+    return associate { (coordinates, file) ->
+      val req = DefaultModelBuildingRequest().apply {
+        isProcessPlugins = false
+        pomFile = file
+        isTwoPhaseBuilding = true
+        modelResolver = resolver
+        validationLevel = ModelBuildingRequest.VALIDATION_LEVEL_MINIMAL
+      }
+      val result = builder.build(req)
+      coordinates to loadPomInfo(result.effectiveModel) { modelId ->
+        result.getRawModel(modelId)
       }
     }
   }
 
-  private fun Set<DependencyCoordinates>.fetchPomFiles(variants: List<ResolvedVariantResult>): List<ResolvedArtifact> {
+  private fun Set<DependencyCoordinates>.fetchPomFiles(
+    variants: List<ResolvedVariantResult>,
+    dependencies: DependencyHandler,
+    configurations: ConfigurationContainer,
+  ): List<DependencyCoordinatesWithPomFile> {
     val pomDependencies = map {
-      project.dependencies.create(it.pomCoordinate())
+      dependencies.create(it.pomCoordinate())
     }.toTypedArray()
 
-    val withVariants = project.configurations.detachedConfiguration(*pomDependencies).apply {
+    val withVariants = configurations.detachedConfiguration(*pomDependencies).apply {
       for (variant in variants) {
         attributes {
           val variantAttrs = variant.attributes
@@ -106,9 +170,13 @@ internal abstract class LicenseeTask : DefaultTask() {
       }
     }.artifacts()
 
-    return withVariants.ifEmpty {
-      project.configurations.detachedConfiguration(*pomDependencies).artifacts()
-    }
+    val withoutVariants = configurations.detachedConfiguration(*pomDependencies).artifacts()
+
+    return (withVariants + withoutVariants).map {
+      // Cast is safe because all resolved artifacts are pom files.
+      val coordinates = (it.id.componentIdentifier as ModuleComponentIdentifier).toDependencyCoordinates()
+      DependencyCoordinatesWithPomFile(coordinates, it.file)
+    }.distinctBy { it.dependencyCoordinates }
   }
 
   private fun Configuration.artifacts() = resolvedConfiguration.lenientConfiguration.allModuleDependencies.flatMap { it.allModuleArtifacts }
@@ -116,10 +184,16 @@ internal abstract class LicenseeTask : DefaultTask() {
   @get:OutputDirectory
   abstract val outputDir: DirectoryProperty
 
-  private val _logger: Logger = Logging.getLogger(LicenseeTask::class.java)
+  @Internal
+  val jsonOutput: Provider<RegularFile> = outputDir.file("artifacts.json")
 
   @Internal
-  override fun getLogger() = _logger
+  val validationOutput: Provider<RegularFile> = outputDir.file("validation.txt")
+
+  private val logger: Logger = Logging.getLogger(LicenseeTask::class.java)
+
+  @Internal
+  override fun getLogger() = logger
 
   @TaskAction
   fun execute() {
@@ -150,9 +224,7 @@ internal abstract class LicenseeTask : DefaultTask() {
 
     val artifactsJson = outputFormat.encodeToString(listOfArtifactDetail, artifactDetails)
 
-    val outputDir = outputDir.asFile.get()
-    val artifactsJsonFile = File(outputDir, "artifacts.json")
-    artifactsJsonFile.parentFile.mkdirs()
+    val artifactsJsonFile = jsonOutput.get().asFile
     artifactsJsonFile.writeText(artifactsJson)
     if (!artifactsJson.endsWith("\n")) {
       // Force a trailing newline because it makes editing expected files easier.
@@ -205,22 +277,27 @@ internal abstract class LicenseeTask : DefaultTask() {
     val validationReport = StringBuilder()
 
     val violationAction = violationAction.get()
-    val errorLevel = if (violationAction == IGNORE) INFO else ERROR
-    val warningLevel = if (violationAction == IGNORE) INFO else WARN
-    val lifecycleLevel = if (violationAction == IGNORE) INFO else LIFECYCLE
+    val violationErrorLevel = if (violationAction == ViolationAction.IGNORE) INFO else ERROR
+    val violationWarningLevel = if (violationAction == ViolationAction.IGNORE) INFO else WARN
 
-    fun logResult(configResult: ValidationResult, prefix: String = "") {
+    val unusedAction = unusedAction.get()
+    val unusedErrorLevel = if (unusedAction == UnusedAction.IGNORE) INFO else ERROR
+    val unusedWarningLevel = if (unusedAction == UnusedAction.IGNORE) INFO else WARN
+
+    val lifecycleLevel = if (violationAction == ViolationAction.IGNORE) INFO else LIFECYCLE
+
+    fun logResult(configResult: ValidationResult, error: LogLevel, warning: LogLevel, prefix: String = "") {
       when (configResult) {
         is ValidationResult.Error -> {
           val message = prefix + "ERROR: " + configResult.message
           validationReport.appendLine(message)
-          logger.log(errorLevel, message)
+          logger.log(error, message)
         }
 
         is ValidationResult.Warning -> {
           val message = prefix + "WARNING: " + configResult.message
           validationReport.appendLine(message)
-          logger.log(warningLevel, message)
+          logger.log(warning, message)
         }
 
         is ValidationResult.Info -> {
@@ -231,12 +308,14 @@ internal abstract class LicenseeTask : DefaultTask() {
       }
     }
     for (configResult in validationResult.configResults) {
-      logResult(configResult)
+      logResult(configResult, unusedErrorLevel, unusedWarningLevel)
     }
     if (validationResult.configResults.isNotEmpty() && validationResult.artifactResults.isNotEmpty()) {
       validationReport.appendLine()
       // We know these are always at warning or error level, so use lifecycle for space.
-      logger.log(lifecycleLevel, "")
+      if (unusedWarningLevel > INFO || unusedErrorLevel > INFO || logger.isInfoEnabled) {
+        logger.log(lifecycleLevel, "")
+      }
     }
     for ((artifactDetail, results) in validationResult.artifactResults) {
       val coordinateHeader = buildString {
@@ -255,19 +334,23 @@ internal abstract class LicenseeTask : DefaultTask() {
         logger.info(coordinateHeader)
       }
       for (result in results) {
-        logResult(result, prefix = " - ")
+        logResult(result, violationErrorLevel, violationWarningLevel, prefix = " - ")
       }
     }
 
-    val validationReportFile = File(outputDir, "validation.txt")
-    validationReportFile.parentFile.mkdirs()
+    val validationReportFile = validationOutput.get().asFile
     validationReportFile.writeText(validationReport.toString())
 
-    if (violationAction == FAIL && validationResult.containsErrors) {
+    if (violationAction == ViolationAction.FAIL && validationResult.containsErrors) {
       throw RuntimeException("Artifacts failed validation. See output above.")
     }
   }
 }
+
+private data class DependencyCoordinatesWithPomFile(
+  val dependencyCoordinates: DependencyCoordinates,
+  val pomFile: File,
+)
 
 internal data class PomInfo(
   val name: String?,

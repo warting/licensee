@@ -1,15 +1,18 @@
-apply plugin: 'com.android.application'
-apply plugin: 'app.cash.licensee'
+plugins {
+  alias(libs.plugins.android.application)
+  alias(libs.plugins.licensee)
+}
 
 dependencies {
   implementation project(':other')
 }
 
 android {
-  compileSdkVersion versions.compileSdk
+  compileSdk 33
+  namespace 'com.example'
 
   defaultConfig {
-    minSdkVersion versions.minSdk
+    minSdk 21
   }
 
   lintOptions {

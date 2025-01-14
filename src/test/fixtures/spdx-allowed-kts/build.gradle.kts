@@ -1,10 +1,6 @@
-buildscript {
-  apply(from = "../../../../dependencies.gradle")
-}
-
 plugins {
-  `java-library`
-  id("app.cash.licensee") version property("licenseeVersion").toString()
+  id("java-library")
+  alias(libs.plugins.licensee)
 }
 
 dependencies {
@@ -13,10 +9,4 @@ dependencies {
 
 licensee {
   allow("Apache-2.0")
-}
-
-repositories {
-  maven {
-    setUrl("file://${rootDir.absolutePath}/repo")
-  }
 }

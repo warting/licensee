@@ -1,12 +1,8 @@
 import app.cash.licensee.ViolationAction.LOG
 
-buildscript {
-  apply(from = "../../../../dependencies.gradle")
-}
-
 plugins {
-  `java-library`
-  id("app.cash.licensee") version property("licenseeVersion").toString()
+  id("java-library")
+  alias(libs.plugins.licensee)
 }
 
 dependencies {
@@ -15,10 +11,4 @@ dependencies {
 
 licensee {
   violationAction(LOG)
-}
-
-repositories {
-  maven {
-    setUrl("file://${rootDir.absolutePath}/repo")
-  }
 }

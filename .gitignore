@@ -4,6 +4,9 @@
 *.iml
 
 # Gradle
-/.gradle
+.gradle
 build
 /reports
+
+# Android
+local.properties

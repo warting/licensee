@@ -1,10 +1,6 @@
-buildscript {
-  apply(from = "../../../../dependencies.gradle")
-}
-
 plugins {
-  `java-library`
-  id("app.cash.licensee") version property("licenseeVersion").toString()
+  id("java-library")
+  alias(libs.plugins.licensee)
 }
 
 dependencies {
@@ -17,11 +13,5 @@ licensee {
   ignoreDependencies("com.example") {
     transitive = true
     because("reasons")
-  }
-}
-
-repositories {
-  maven {
-    setUrl("file://${rootDir.absolutePath}/repo")
   }
 }

@@ -1,10 +1,7 @@
 pluginManagement {
-  repositories {
-    maven {
-      setUrl("file://${rootDir.absolutePath}/../../../../build/localMaven")
-    }
-    mavenCentral()
-  }
+  includeBuild("../../test-build-logic")
 }
 
-include(":")
+plugins {
+  id("licenseeTests")
+}

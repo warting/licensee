@@ -23,8 +23,8 @@ internal fun normalizeLicenseInfo(
     val spdxLicenses = mutableSetOf<SpdxLicense>()
     val unknownLicenses = mutableSetOf<UnknownLicense>()
     for (license in pomInfo.licenses) {
-      val spdxLicense = license.toSpdxOrNull()
-      if (spdxLicense != null) {
+      val spdxLicense = license.toSpdx()
+      if (spdxLicense.isNotEmpty()) {
         spdxLicenses += spdxLicense
       } else {
         unknownLicenses += UnknownLicense(license.name, license.url)
@@ -49,59 +49,27 @@ internal fun normalizeLicenseInfo(
 private val detailsComparator =
   compareBy(ArtifactDetail::groupId, ArtifactDetail::artifactId, ArtifactDetail::version)
 
-private fun PomLicense.toSpdxOrNull(): SpdxLicense? {
-  if (url != null) {
-    SpdxLicenses.embedded.findByUrl(url)?.let { license ->
-      return license
-    }
-    val fallbackId = when (url) {
-      "http://www.apache.org/licenses/LICENSE-2.0.txt",
-      "https://www.apache.org/licenses/LICENSE-2.0.txt",
-      "http://www.apache.org/licenses/LICENSE-2.0.html",
-      "https://www.apache.org/licenses/LICENSE-2.0.html",
-      "http://www.opensource.org/licenses/apache2.0.php",
-      "http://www.apache.org/licenses/LICENSE-2.0",
-      -> "Apache-2.0"
-
-      "http://creativecommons.org/publicdomain/zero/1.0/",
-      -> "CC0-1.0"
-
-      "http://www.opensource.org/licenses/LGPL-2.1",
-      "http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html",
-      -> "LGPL-2.1-only"
-
-      "https://opensource.org/licenses/mit-license",
-      "http://www.opensource.org/licenses/mit-license.php",
-      "http://opensource.org/licenses/MIT",
-      -> "MIT"
-
-      "http://www.opensource.org/licenses/bsd-license",
-      "http://www.opensource.org/licenses/bsd-license.php",
-      -> "BSD-2-Clause"
-
-      "http://opensource.org/licenses/BSD-3-Clause",
-      -> "BSD-3-Clause"
-
-      "http://www.gnu.org/software/classpath/license.html",
-      -> "GPL-2.0-with-classpath-exception"
-
-      "http://www.eclipse.org/org/documents/epl-v10.php",
-      -> "EPL-1.0"
-
-      "https://www.eclipse.org/legal/epl-2.0/",
-      -> "EPL-2.0"
-
-      else -> null
-    }
-    fallbackId?.let(SpdxLicenses.embedded::findByIdentifier)?.let { license ->
-      return license
-    }
-  } else if (name != null) {
-    // Only fallback to name-based matching if the URL is null.
-    SpdxLicenses.embedded.findByIdentifier(name)?.let { license ->
-      return license
+private fun PomLicense.toSpdx(): List<SpdxLicense> = when {
+  url != null -> {
+    val licenses = SpdxId.findByUrl(url)
+    licenses.map { license ->
+      license.toSpdxLicense()
     }
   }
-
-  return null
+  name != null -> {
+    // Only fallback to name-based matching if the URL is null.
+    val license = SpdxId.findByIdentifier(name)
+    if (license != null) {
+      listOf(license.toSpdxLicense())
+    } else {
+      emptyList()
+    }
+  }
+  else -> emptyList()
 }
+
+internal fun SpdxId.toSpdxLicense() = SpdxLicense(
+  identifier = id,
+  name = name,
+  url = url,
+)

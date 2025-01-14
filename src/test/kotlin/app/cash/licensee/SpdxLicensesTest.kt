@@ -15,158 +15,38 @@
  */
 package app.cash.licensee
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import assertk.assertThat
+import assertk.assertions.containsExactly
+import assertk.assertions.doesNotContain
+import assertk.assertions.isEqualTo
+import java.io.File
 import org.junit.Test
 
 class SpdxLicensesTest {
   @Test fun embeddedDatabaseLitmusTest() {
-    assertEquals(
+    assertThat(
+      SpdxId.findByIdentifier("MIT-0")?.toSpdxLicense(),
+    ).isEqualTo(
       SpdxLicense("MIT-0", "MIT No Attribution", "https://github.com/aws/mit-0"),
-      SpdxLicenses.embedded.findByIdentifier("MIT-0"),
     )
   }
 
-  @Test fun shortestIdentifierAlwaysPreferredRegardlessOfOrder() {
-    val json = """
-      |{"licenses":[
-      |  {
-      |    "licenseId": "FOO-1.0",
-      |    "name": "Foo License",
-      |    "reference": "https://spdx.org/licenses/FOO-1.0.html",
-      |    "seeAlso": [
-      |      "http://example.com/foo"
-      |    ]
-      |  },
-      |  {
-      |    "licenseId": "FOO-1.0-some-variant",
-      |    "name": "Foo Variant License",
-      |    "reference": "https://spdx.org/licenses/FOO-1.0-some-variant.html",
-      |    "seeAlso": [
-      |      "http://example.com/foo"
-      |    ]
-      |  },
-      |  {
-      |    "licenseId": "BAR-1.0-some-variant",
-      |    "name": "Bar Variant License",
-      |    "reference": "https://spdx.org/licenses/BAR-1.0-some-variant.html",
-      |    "seeAlso": [
-      |      "http://example.com/bar"
-      |    ]
-      |  },
-      |  {
-      |    "licenseId": "BAR-1.0",
-      |    "name": "Bar License",
-      |    "reference": "https://spdx.org/licenses/BAR-1.0.html",
-      |    "seeAlso": [
-      |      "http://example.com/bar"
-      |    ]
-      |  }
-      |]}
-      |
-    """.trimMargin()
-    val spdxLicenses = SpdxLicenses.parseJson(json)
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://example.com/foo"),
-      spdxLicenses.findByUrl("http://example.com/foo"),
+  @Test fun fallbackDatabaseLitmusTest() {
+    assertThat(
+      SpdxId.findByUrl("https://api.github.com/licenses/bsd-2-clause").map { it.toSpdxLicense() },
+    ).containsExactly(
+      SpdxLicense("BSD-2-Clause", "BSD 2-Clause \"Simplified\" License", "https://opensource.org/licenses/BSD-2-Clause"),
     )
-    assertEquals(
-      SpdxLicense("BAR-1.0", "Bar License", "https://example.com/bar"),
-      spdxLicenses.findByUrl("http://example.com/bar"),
+    assertThat(
+      SpdxId.findByUrl("https://api.github.com/licenses/gpl-2.0").map { it.toSpdxLicense() },
+    ).containsExactly(
+      SpdxLicense("GPL-2.0", "GNU General Public License v2.0 only", "https://www.gnu.org/licenses/old-licenses/gpl-2.0-standalone.html"),
+      SpdxLicense("GPL-2.0-or-later", "GNU General Public License v2.0 or later", "https://www.gnu.org/licenses/old-licenses/gpl-2.0-standalone.html"),
     )
   }
 
-  @Test fun httpUrlGetsHttpsVariant() {
-    val json = """
-      |{"licenses":[
-      |  {
-      |    "licenseId": "FOO-1.0",
-      |    "name": "Foo License",
-      |    "reference": "https://spdx.org/licenses/FOO-1.0.html",
-      |    "seeAlso": [
-      |      "http://example.com/foo"
-      |    ]
-      |  },
-      |  {
-      |    "licenseId": "BAR-1.0",
-      |    "name": "Bar License",
-      |    "reference": "https://spdx.org/licenses/BAR-1.0.html",
-      |    "seeAlso": [
-      |      "https://example.com/bar"
-      |    ]
-      |  }
-      |]}
-      |
-    """.trimMargin()
-    val spdxLicenses = SpdxLicenses.parseJson(json)
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://example.com/foo"),
-      spdxLicenses.findByUrl("http://example.com/foo"),
-    )
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://example.com/foo"),
-      spdxLicenses.findByUrl("https://example.com/foo"),
-    )
-    assertNull(spdxLicenses.findByUrl("http://example.com/bar"))
-    assertEquals(
-      SpdxLicense("BAR-1.0", "Bar License", "https://example.com/bar"),
-      spdxLicenses.findByUrl("https://example.com/bar"),
-    )
-  }
-
-  @Test fun spdxUrlSupported() {
-    val json = """
-      |{"licenses":[
-      |  {
-      |    "licenseId": "FOO-1.0",
-      |    "name": "Foo License",
-      |    "reference": "https://spdx.org/licenses/FOO-1.0.html",
-      |    "seeAlso": [
-      |      "http://example.com/foo"
-      |    ]
-      |  }
-      |]}
-      |
-    """.trimMargin()
-    val spdxLicenses = SpdxLicenses.parseJson(json)
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://example.com/foo"),
-      spdxLicenses.findByUrl("http://example.com/foo"),
-    )
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://example.com/foo"),
-      spdxLicenses.findByUrl("https://spdx.org/licenses/FOO-1.0.html"),
-    )
-  }
-
-  @Test fun spdxUrlFallback() {
-    val json = """
-      |{"licenses":[
-      |  {
-      |    "licenseId": "FOO-1.0",
-      |    "name": "Foo License",
-      |    "reference": "https://spdx.org/licenses/FOO-1.0.html",
-      |    "seeAlso": []
-      |  },
-      |  {
-      |    "licenseId": "BAR-1.0",
-      |    "name": "Bar License",
-      |    "reference": "https://spdx.org/licenses/BAR-1.0.html",
-      |    "seeAlso": [
-      |      "https://example.com/bar"
-      |    ]
-      |  }
-      |]}
-      |
-    """.trimMargin()
-    val spdxLicenses = SpdxLicenses.parseJson(json)
-    assertEquals(
-      SpdxLicense("FOO-1.0", "Foo License", "https://spdx.org/licenses/FOO-1.0.html"),
-      spdxLicenses.findByIdentifier("FOO-1.0"),
-    )
-    assertEquals(
-      SpdxLicense("BAR-1.0", "Bar License", "https://example.com/bar"),
-      spdxLicenses.findByIdentifier("BAR-1.0"),
-    )
+  @Test fun spdxIdsAreValidGroovy() {
+    val file = File(System.getProperty("generatedSpdxFile")).readText()
+    assertThat(file).doesNotContain("`")
   }
 }

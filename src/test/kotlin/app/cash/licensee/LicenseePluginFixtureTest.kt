@@ -15,7 +15,15 @@
  */
 package app.cash.licensee
 
-import com.google.common.truth.Truth.assertThat
+import assertk.Assert
+import assertk.assertThat
+import assertk.assertions.contains
+import assertk.assertions.containsMatch
+import assertk.assertions.doesNotContain
+import assertk.assertions.isEqualTo
+import assertk.assertions.isNotEmpty
+import assertk.assertions.support.expected
+import assertk.assertions.support.show
 import com.google.testing.junit.testparameterinjector.TestParameter
 import com.google.testing.junit.testparameterinjector.TestParameterInjector
 import java.io.File
@@ -41,6 +49,8 @@ class LicenseePluginFixtureTest {
       "coordinate-allowed-override-url",
       "coordinate-allowed-with-reason",
       "coordinate-allowed-with-reason-kts",
+      "coordinate-allowed-with-reason-version-catalog",
+      "coordinate-allowed-with-reason-version-catalog-kts",
       "dependency-substitution-replace-local-with-remote",
       "dependency-substitution-replace-remote-with-local-ignored",
       "dependency-substitution-replace-remote-with-include-build-ignored",
@@ -48,6 +58,7 @@ class LicenseePluginFixtureTest {
       "dependency-verification-disabled",
       "exclude-ignored",
       "flat-dir-repository-ignored",
+      "gson-broken-plugin",
       "ignore-group",
       "ignore-group-artifact",
       "ignore-group-artifact-kts",
@@ -60,6 +71,7 @@ class LicenseePluginFixtureTest {
       "local-file-tree-ignored",
       "multiple-with-spdx-allowed",
       "multiple-with-url-allowed",
+      "platform-pom-is-excluded",
       "plugin-android-application",
       "plugin-android-application-product-flavors",
       "plugin-android-dynamic-feature",
@@ -74,6 +86,7 @@ class LicenseePluginFixtureTest {
       "plugin-kotlin-jvm",
       "plugin-kotlin-mpp",
       "plugin-kotlin-mpp-jvm-with-java",
+      "plugin-kotlin-mpp-native",
       "plugin-kotlin-mpp-report-dir",
       "plugin-kotlin-mpp-with-android-application",
       "plugin-kotlin-mpp-with-android-application-after-licensee",
@@ -84,6 +97,9 @@ class LicenseePluginFixtureTest {
       "pom-with-inheritance-from-both",
       "pom-with-inheritance-from-child",
       "pom-with-inheritance-from-parent",
+      "pom-with-inheritance-from-parent-and-variable-substitution",
+      "pom-with-inheritance-from-parent-with-child-path",
+      "pom-with-inheritance-from-parent-without-child-path",
       "project-android-to-android-ignored",
       "project-android-to-java-ignored",
       "project-java-to-java-ignored",
@@ -100,10 +116,12 @@ class LicenseePluginFixtureTest {
       "transitive-java-to-java-implementation",
       "url-allow-unused",
       "url-allowed",
+      "url-allowed-reason",
       "url-allowed-but-is-spdx",
       "url-allowed-but-no-match",
       "url-allowed-kts",
       "url-missing-name-fallback-is-spdx",
+      "url-mapping-to-multiple-licenses",
     ) fixtureName: String,
   ) {
     val fixtureDir = File(fixturesDir, fixtureName)
@@ -120,6 +138,41 @@ class LicenseePluginFixtureTest {
     secondRun.tasks.filter { it.path.contains(":licensee") }.forEach {
       assertEquals("Second invocation of ${it.path}", UP_TO_DATE, it.outcome)
     }
+  }
+
+  @Test
+  fun customConfig(
+    @TestParameter(
+      "plugin-java-custom-config",
+      "plugin-java-custom-config-kts",
+    ) fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+
+    GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withDebug(true) // Run in-process
+      .withArguments("clean", "licenseeFoo", "--configuration-cache", versionProperty)
+      .forwardOutput()
+      .build()
+    assertExpectedFiles(fixtureDir)
+  }
+
+  @Test
+  fun consumeArtifactsJson(
+    @TestParameter(
+      "consume-artifact-json-as-task-input",
+    ) fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+
+    GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withDebug(true) // Run in-process
+      .withArguments("clean", "myCopy", "--configuration-cache", versionProperty)
+      .forwardOutput()
+      .build()
+    assertExpectedFiles(fixtureDir)
   }
 
   @Test fun failure(
@@ -148,7 +201,17 @@ class LicenseePluginFixtureTest {
     val fixtureDir = File(fixturesDir, fixtureName)
     val result = createRunner(fixtureDir).buildAndFail()
     assertThat(result.output).containsMatch(
-      "Transitive dependency ignore on 'com\\.example(:example)?' is dangerous and requires a reason string",
+      "Transitive dependency ignore on 'com\\.example(:example)?' is dangerous and requires a reason string".toRegex(),
+    )
+  }
+
+  @Test fun invalidSpdxFails(
+    @TestParameter("allow-with-invalid-spdx") fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+    val result = createRunner(fixtureDir).buildAndFail()
+    assertThat(result.output).contains(
+      "ASDF is not a valid SPDX id.",
     )
   }
 
@@ -169,6 +232,18 @@ class LicenseePluginFixtureTest {
     val result = createRunner(fixtureDir).buildAndFail()
     assertThat(result.output).contains(
       "'app.cash.licensee' requires compatible language/platform plugin to be applied (project :some:thing)",
+    )
+  }
+
+  @Test fun allowDependencyWithoutVersionFails(
+    @TestParameter(
+      "coordinate-allowed-with-reason-version-catalog-null-version",
+    ) fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+    val result = createRunner(fixtureDir).buildAndFail()
+    assertThat(result.output).contains(
+      "version was null in allowDependency for exam",
     )
   }
 
@@ -208,18 +283,63 @@ class LicenseePluginFixtureTest {
     )
   }
 
+  @Test fun unusedIgnored(
+    @TestParameter(
+      "coordinate-allow-unused-ignored",
+      "coordinate-allow-unused-ignored-kts",
+      "spdx-allow-unused-ignored",
+      "url-allow-unused-ignored",
+    ) fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+    val result = createRunner(fixtureDir).build()
+    assertExpectedFiles(fixtureDir)
+    assertThat(result.output).doesNotContainMatch(
+      """
+      |WARNING: Allowed .*? is unused
+      """.trimMargin().toRegex(),
+    )
+    assertThat(result.output).doesNotContain("\n\n> Task :licensee")
+  }
+
+  @Test fun unusedWarn(
+    @TestParameter(
+      "coordinate-allow-unused-warn",
+      "coordinate-allow-unused-warn-kts",
+      "spdx-allow-unused-warn",
+      "url-allow-unused-warn",
+    ) fixtureName: String,
+  ) {
+    val fixtureDir = File(fixturesDir, fixtureName)
+    val result = createRunner(fixtureDir).build()
+    assertExpectedFiles(fixtureDir)
+    assertThat(result.output).containsMatch(
+      """
+      |WARNING: Allowed .*? is unused
+      """.trimMargin().toRegex(),
+    )
+  }
+
   @Test fun allFixturesCovered() {
     val expectedDirs = javaClass.declaredMethods
       .filter { it.isAnnotationPresent(Test::class.java) }
       .filter { it.parameterCount == 1 } // Assume single parameter means test parameter.
       .flatMap { it.parameters[0].getAnnotation(TestParameter::class.java).value.toList() }
-    val actualDirs = fixturesDir.listFiles().filter { it.isDirectory }.map { it.name }
-    assertThat(expectedDirs).containsExactlyElementsIn(actualDirs)
+      .sorted()
+    val actualDirs = fixturesDir.listFiles()!!
+      .filter { it.isDirectory }
+      .map { it.name }
+      .sorted()
+    assertThat(actualDirs).isEqualTo(expectedDirs)
   }
 
   private fun createRunner(fixtureDir: File): GradleRunner {
     val gradleRoot = File(fixtureDir, "gradle").also { it.mkdir() }
     File("gradle/wrapper").copyRecursively(File(gradleRoot, "wrapper"), true)
+    val androidSdkFile = File("local.properties")
+    if (androidSdkFile.exists()) {
+      androidSdkFile.copyTo(File(fixtureDir, "local.properties"), overwrite = true)
+    }
     return GradleRunner.create()
       .withProjectDir(fixtureDir)
       .withDebug(true) // Run in-process
@@ -247,3 +367,11 @@ class LicenseePluginFixtureTest {
 
 private val fixturesDir = File("src/test/fixtures")
 private val versionProperty = "-PlicenseeVersion=${System.getProperty("licenseeVersion")!!}"
+
+/**
+ * TODO: remove this after https://github.com/willowtreeapps/assertk/issues/515 is fixed.
+ */
+private fun Assert<CharSequence>.doesNotContainMatch(regex: Regex) = given { actual ->
+  if (!regex.containsMatchIn(actual)) return
+  expected("to not contain match:${show(regex)} but was:${show(actual)}")
+}
